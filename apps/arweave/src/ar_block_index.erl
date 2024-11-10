@@ -1,17 +1,34 @@
+%%====================================================================
+%% 文件功能描述：
+%% 本模块实现了区块索引功能，用于维护和管理区块链的索引信息。
+%%
+%% 主要功能：
+%% 1. 存储和管理区块索引信息
+%% 2. 提供区块查询接口
+%% 3. 处理区块链分叉和重组
+%% 4. 维护区块高度到区块哈希的映射
+%% 5. 提供区块范围查询功能
+%%
+%% 数据结构：
+%% - 使用ETS表存储区块索引
+%% - 每个索引项包含: {WeaveSize, Height, Hash, TXRoot}
+%% - 按区块高度排序存储
+%%====================================================================
+
 -module(ar_block_index).
 
 -export([init/1, update/2, member/1, get_list/1, get_list_by_hash/1, get_element_by_height/1,
 		get_block_bounds/1, get_intersection/2, get_intersection/1, get_range/2, get_last/0]).
 
 %%%===================================================================
-%%% Public interface.
+%%% 公共API
 %%%===================================================================
 
-%% @doc Store the given block index in ETS.
+%% @doc 将给定的区块索引存储到ETS表中
 init(BI) ->
 	init(lists:reverse(BI), 0).
 
-%% @doc Insert the new block index elements from BI and remove the N orphaned ones.
+%% @doc 从BI插入新的区块索引元素并移除N个孤立的元素
 update([], 0) ->
 	ok;
 update(BI, 0) ->
@@ -21,21 +38,21 @@ update(BI, N) ->
 	ets:delete(block_index, ets:last(block_index)),
 	update(BI, N - 1).
 
-%% @doc Return true if the given block hash is found in the index.
+%% @doc 检查给定的区块哈希是否在索引中
 member(H) ->
 	member(H, ets:last(block_index)).
 
-%% @doc Return the list of {H, WeaveSize, TXRoot} triplets up to the given Height (including)
-%% sorted from latest to earliest.
+%% @doc 返回到给定高度(包含)的{H, WeaveSize, TXRoot}三元组列表
+%% 按从最新到最旧排序
 get_list(Height) ->
 	get_list([], ets:first(block_index), -1, Height).
 
-%% @doc Return the list of {H, WeaveSize, TXRoot} triplets up to the block with the given
-%% hash H (including) sorted from latest to earliest.
+%% @doc 返回到具有给定哈希H的区块(包含)的{H, WeaveSize, TXRoot}三元组列表
+%% 按从最新到最旧排序
 get_list_by_hash(H) ->
 	get_list_by_hash([], ets:first(block_index), -1, H).
 
-%% @doc Return the {H, WeaveSize, TXRoot} triplet for the given Height or not_found.
+%% @doc 返回给定高度的{H, WeaveSize, TXRoot}三元组或not_found
 get_element_by_height(Height) ->
 	case catch ets:slot(block_index, Height) of
 		{'EXIT', _} ->
@@ -46,8 +63,8 @@ get_element_by_height(Height) ->
 			{H, WeaveSize, TXRoot}
 	end.
 
-%% @doc Return {BlockStartOffset, BlockEndOffset, TXRoot} where Offset >= BlockStartOffset,
-%% Offset < BlockEndOffset.
+%% @doc 返回{BlockStartOffset, BlockEndOffset, TXRoot}
+%% 其中Offset >= BlockStartOffset, Offset < BlockEndOffset
 get_block_bounds(Offset) ->
 	{WeaveSize, Height, _H, TXRoot} = Key = ets:next(block_index, {Offset, n, n, n}),
 	case Height of
@@ -58,8 +75,9 @@ get_block_bounds(Offset) ->
 			{PrevWeaveSize, WeaveSize, TXRoot}
 	end.
 
-%% @doc Return {Height, {H, WeaveSize, TXRoot}} with the triplet present in both
-%% the cached block index and the given BI or no_intersection.
+%% @doc 返回{Height, {H, WeaveSize, TXRoot}}
+%% 其中三元组同时存在于缓存的区块索引和给定的BI中
+%% 如果没有交集则返回no_intersection
 get_intersection(Height, _BI) when Height < 0 ->
 	no_intersection;
 get_intersection(_Height, []) ->
@@ -74,8 +92,8 @@ get_intersection(Height, BI) ->
 			no_intersection
 	end.
 
-%% @doc Return the {H, WeaveSize, TXRoot} triplet present in both
-%% the cached block index and the given BI or no_intersection.
+%% @doc 返回同时存在于缓存的区块索引和给定的BI中的{H, WeaveSize, TXRoot}三元组
+%% 如果没有交集则返回no_intersection
 get_intersection([]) ->
 	no_intersection;
 get_intersection(BI) ->
@@ -83,8 +101,8 @@ get_intersection(BI) ->
 	get_intersection2({H, WeaveSize}, tl(lists:reverse(BI)),
 			ets:next(block_index, {WeaveSize - 1, n, n, n})).
 
-%% @doc Return the list of {H, WeaveSize, TXRoot} for blocks with Height >= Start, =< End,
-%% sorted from the largest height to the smallest.
+%% @doc 返回高度在Start和End之间(包含)的{H, WeaveSize, TXRoot}列表
+%% 按从高度大到小排序
 get_range(Start, End) when Start > End ->
 	[];
 get_range(Start, End) ->
@@ -96,26 +114,29 @@ get_range(Start, End) ->
 			{error, invalid_start}
 	end.
 
-%% @doc Return the last element in the block index.
+%% @doc 返回区块索引中的最后一个元素
 get_last() ->
 	ets:last(block_index).
 
 %%%===================================================================
-%%% Private functions.
+%%% 私有函数
 %%%===================================================================
 
+%% @doc 初始化区块索引
 init([], _Height) ->
 	ok;
 init([{H, WeaveSize, TXRoot} | BI], Height) ->
 	ets:insert(block_index, {{WeaveSize, Height, H, TXRoot}}),
 	init(BI, Height + 1).
 
+%% @doc 更新区块索引
 update2([], _Height) ->
 	ok;
 update2([{H, WeaveSize, TXRoot} | BI], Height) ->
 	ets:insert(block_index, {{WeaveSize, Height, H, TXRoot}}),
 	update2(BI, Height + 1).
 
+%% @doc 检查区块哈希是否在索引中
 member(H, {_, _, H, _}) ->
 	true;
 member(_H, '$end_of_table') ->
@@ -123,6 +144,7 @@ member(_H, '$end_of_table') ->
 member(H, Key) ->
 	member(H, ets:prev(block_index, Key)).
 
+%% @doc 获取区块列表
 get_list(BI, '$end_of_table', _Height, _MaxHeight) ->
 	BI;
 get_list(BI, _Elem, Height, MaxHeight) when Height >= MaxHeight ->
@@ -131,11 +153,11 @@ get_list(BI, {WeaveSize, NextHeight, H, TXRoot} = Key, Height, MaxHeight)
 		when NextHeight == Height + 1 ->
 	get_list([{H, WeaveSize, TXRoot} | BI], ets:next(block_index, Key), Height + 1, MaxHeight);
 get_list(_BI, _Key, _Height, MaxHeight) ->
-	%% An extremely unlikely race condition should have occured where some blocks were
-	%% orphaned right after we passed some of them here, and new blocks have been added
-	%% right before we reached the end of the table.
+	%% 极不可能发生的竞争条件:我们传递了一些区块后,它们被孤立了,
+	%% 在我们到达表尾之前又添加了新的区块
 	get_list(MaxHeight).
 
+%% @doc 按哈希获取区块列表
 get_list_by_hash(BI, '$end_of_table', _Height, _H) ->
 	BI;
 get_list_by_hash(BI, {WeaveSize, NextHeight, H, TXRoot}, Height, H)
@@ -146,11 +168,11 @@ get_list_by_hash(BI, {WeaveSize, NextHeight, H, TXRoot} = Key, Height, H2)
 	get_list_by_hash([{H, WeaveSize, TXRoot} | BI], ets:next(block_index, Key), Height + 1,
 			H2);
 get_list_by_hash(_BI, _Key, _Height, H) ->
-	%% An extremely unlikely race condition should have occured where some blocks were
-	%% orphaned right after we passed some of them here, and new blocks have been added
-	%% right before we reached the end of the table.
+	%% 极不可能发生的竞争条件:我们传递了一些区块后,它们被孤立了,
+	%% 在我们到达表尾之前又添加了新的区块
 	get_list_by_hash(H).
 
+%% @doc 获取交集
 get_intersection(Height, Entry, _ReverseBI, '$end_of_table') ->
 	{Height - 1, Entry};
 get_intersection(Height, Entry, [], _Entry) ->
@@ -174,6 +196,7 @@ get_intersection3({WeaveSize, _, H, TXRoot} = Key, [{H, WeaveSize, TXRoot} | BI]
 get_intersection3(_, _, {H, WeaveSize, TXRoot}) ->
 	{H, WeaveSize, TXRoot}.
 
+%% @doc 获取区块范围
 get_range2(Start, End, _Elem) when Start > End ->
 	[];
 get_range2(_Start, _End, '$end_of_table') ->

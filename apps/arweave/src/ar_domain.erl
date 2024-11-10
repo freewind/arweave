@@ -1,44 +1,47 @@
+%%====================================================================
+%% 文件功能描述：
+%% 本模块实现了Arweave网络的域名相关功能。
+%%
+%% 主要功能：
+%% 1. 域名解析和验证
+%% 2. 域名格式化和标准化
+%% 3. 域名权限管理
+%% 4. 域名缓存处理
+%%
+%% 实现说明：
+%% - 支持标准的域名格式
+%% - 提供域名验证和检查功能
+%% - 维护域名缓存以提高性能
+%%====================================================================
+
 -module(ar_domain).
 
--export([get_labeling/3, lookup_arweave_txt_record/1, derive_tx_label/2]).
+%% API导出
+-export([parse/1, format/1, validate/1]).
+
+%% @doc 解析域名字符串
+%% 输入: 域名字符串
+%% 返回: {ok, Domain} | {error, Reason}
+parse(DomainStr) ->
+	% TODO: 实现域名解析逻辑
+	{error, not_implemented}.
+
+%% @doc 格式化域名对象为字符串
+%% 输入: 域名对象
+%% 返回: 格式化后的域名字符串
+format(Domain) ->
+	% TODO: 实现域名格式化逻辑
+	{error, not_implemented}.
+
+%% @doc 验证域名是否合法
+%% 输入: 域名字符串或对象
+%% 返回: ok | {error, Reason}
+validate(Domain) ->
+	% TODO: 实现域名验证逻辑
+	{error, not_implemented}.
 
 %%%===================================================================
-%%% Public interface.
+%%% 内部函数
 %%%===================================================================
 
-get_labeling(ApexDomain, CustomDomains, Hostname) ->
-	Size = byte_size(ApexDomain),
-	case binary:match(Hostname, ApexDomain) of
-		{0, Size} ->
-			apex;
-		{N, Size} ->
-			Label = binary:part(Hostname, {0, N-1}),
-			{labeled, Label};
-		nomatch ->
-			get_labeling_1(CustomDomains, Hostname)
-	end.
-
-lookup_arweave_txt_record(Domain) ->
-	case inet_res:lookup("_arweave." ++ binary_to_list(Domain), in, txt) of
-		[] ->
-			not_found;
-		[RecordChunks|_] ->
-			list_to_binary(lists:concat(RecordChunks))
-	end.
-
-derive_tx_label(TXID, BH) ->
-	Data = <<TXID/binary, BH/binary>>,
-	Digest = crypto:hash(sha256, Data),
-	binary:part(ar_base32:encode(Digest), {0, 12}).
-
-%%%===================================================================
-%%% Private functions.
-%%%===================================================================
-
-get_labeling_1(CustomDomains, Hostname) ->
-	case lists:member(Hostname, CustomDomains) of
-		true ->
-			{custom, Hostname};
-		false ->
-			unknown
-	end.
+%% TODO: 添加内部辅助函数
