@@ -1,11 +1,54 @@
+%%====================================================================
+%% 文件功能描述：
+%% 本模块实现了数据打包性能基准测试功能，用于评估系统的数据打包和重打包性能。
+%%
+%% 主要功能：
+%% 1. 测试不同打包模式的性能:
+%%    - 传统打包(pack_legacy)
+%%    - 组合打包(pack_composite) 
+%%    - Erlang重打包(erl_repack_legacy)
+%%    - NIF重打包(nif_repack_legacy/composite)
+%%
+%% 2. 支持的配置参数:
+%%    - RandomX模式
+%%    - JIT编译开关
+%%    - 大页内存开关
+%%    - 硬件AES指令开关
+%%    - 打包难度
+%%    - 打包轮数
+%%
+%% 3. 性能指标统计:
+%%    - 总执行时间
+%%    - 初始化时间
+%%    - 每个块的处理时间
+%%    - 每核心的处理能力
+%%====================================================================
+
 -module(ar_bench_packing).
 
+%% API导出
 -export([run_benchmark_from_cli/1]).
 
+%% 引入必要的头文件
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_consensus.hrl").
 -include_lib("kernel/include/file.hrl").
 
+%% 测试配置记录(record)定义
+%% test: 测试类型
+%% num_workers: 工作进程数量
+%% total_megabytes: 总测试数据大小(MB)
+%% jit: JIT编译开关
+%% large_pages: 大页内存开关
+%% hardware_aes: 硬件AES指令开关
+%% packing_difficulty: 打包难度
+%% rounds: 打包轮数
+%% root: 根哈希
+%% src_address: 源地址
+%% dst_address: 目标地址
+%% randomx_state: RandomX状态
+%% input_file: 输入文件句柄
+%% output_file: 输出文件句柄
 -record(test_config, {
 	test,
 	num_workers,
@@ -23,6 +66,9 @@
 	output_file
 }).
 
+%% 定义有效的测试类型和对应的处理函数
+%% 第一个元素表示是否为重打包测试
+%% 第二个元素是实际的处理函数
 -define(VALID_TESTS, #{
 	pack_legacy => {false, fun pack_legacy_chunks/4},
 	pack_composite => {false, fun pack_composite_chunks/4},
@@ -31,16 +77,27 @@
 	nif_repack_composite => {true, fun nif_repack_composite_chunks/4}
 }).
 
+%% @doc 从命令行运行基准测试
+%% Args - 命令行参数列表
 run_benchmark_from_cli(Args) ->
+	%% 获取测试类型参数,默认为pack_legacy
 	Test = list_to_atom(get_flag_value(Args, "test", "pack_legacy")),
+	%% 获取JIT编译开关,默认启用
 	JIT = list_to_integer(get_flag_value(Args, "jit", "1")),
+	%% 获取大页内存开关,默认启用
 	LargePages = list_to_integer(get_flag_value(Args, "large_pages", "1")),
+	%% 获取硬件AES开关,默认启用
 	HardwareAES = list_to_integer(get_flag_value(Args, "hw_aes", "1")),
+	%% 获取打包难度,默认为1
 	PackingDifficulty = list_to_integer(get_flag_value(Args, "pdiff", "1")),
+	%% 获取打包轮数,默认为COMPOSITE_PACKING_ROUND_COUNT
 	Rounds = list_to_integer(get_flag_value(Args, "rounds",
 		integer_to_list(?COMPOSITE_PACKING_ROUND_COUNT))),
+	%% 运行基准测试
 	run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds).
 
+%% @doc 从参数列表中获取指定标志的值
+%% 如果找不到则返回默认值
 get_flag_value([], _, DefaultValue) ->
 	DefaultValue;
 get_flag_value([Flag | [Value | _Tail]], TargetFlag, _DefaultValue) when Flag == TargetFlag ->
@@ -48,6 +105,7 @@ get_flag_value([Flag | [Value | _Tail]], TargetFlag, _DefaultValue) when Flag ==
 get_flag_value([_ | Tail], TargetFlag, DefaultValue) ->
 	get_flag_value(Tail, TargetFlag, DefaultValue).
 
+%% @doc 显示帮助信息并退出程序
 show_help() ->
 	io:format("~nUsage: benchmark-packing [options]~n"),
 	io:format("Options:~n"),
@@ -61,9 +119,20 @@ show_help() ->
 	lists:foreach(fun(Test) -> io:format("  ~p~n", [Test]) end, maps:keys(?VALID_TESTS)),
 	erlang:halt().
 
+%% @doc 运行基准测试
+%% 参数:
+%% - Test: 测试类型
+%% - JIT: JIT编译开关
+%% - LargePages: 大页内存开关
+%% - HardwareAES: 硬件AES开关
+%% - PackingDifficulty: 打包难度
+%% - Rounds: 打包轮数
 run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
+	%% 等待3秒,让系统稳定
 	timer:sleep(3000),
+	%% 创建offsets ETS表
 	ets:new(offsets, [set, named_table, public]),
+	%% 初始化测试数据
 	EncodedRoot = <<"OIgTTxuEPklMR47Ho8VWnNr1Uh6TNjzxwIs38yuqBK0">>,
 	Root = ar_util:decode(EncodedRoot),
 	EncodedSrcAddress = <<"mvK6e65dcD6XNYDHUVxMa7-d6wVP535Ummtvb8OCUtQ">>,
@@ -71,10 +140,13 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 	EncodedDstAddress = <<"ymvkTAt6DVo0LaV3SH4TPLvzCmn5TIqvCcv1pHWt2Zs">>,
 	DstAddress = ar_util:decode(EncodedDstAddress),
 
+	%% 获取CPU核心数
 	NumWorkers = erlang:system_info(dirty_cpu_schedulers_online),
 
+	%% 计算总测试数据大小(MB),确保能被核心数整除
 	TotalMegaBytes = (1024 div NumWorkers) * NumWorkers,
 
+	%% 创建测试配置
 	Config = #test_config{
 		test = Test,
 		num_workers = NumWorkers,
@@ -89,6 +161,7 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 		dst_address = DstAddress
 	},
 
+	%% 打印测试配置信息
 	io:format("~nBenchmark settings:~n"),
 	io:format("~12s: ~p~n", ["Test", Test]),
 	io:format("~12s: ~p~n", ["Data (MB)", TotalMegaBytes]),
@@ -101,8 +174,10 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 	io:format("~12s: ~p~n", ["rounds", Rounds]),
 	io:format("~n"),
 
+	%% 生成测试输入数据
 	generate_input(Config),
 
+	%% 检查测试类型是否有效
 	case lists:member(Test, maps:keys(?VALID_TESTS)) of
 		true ->
 			run_benchmark(Config);
@@ -110,12 +185,14 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 			show_help()
 	end,
 
+	%% 获取初始化时间和总时间(转换为秒)
 	Init = ar_bench_timer:get_total({init}) / 1000000,
 	Total = ar_bench_timer:get_total({wall}) / 1000000,
 
+	%% 打开结果文件
 	File = open_file("benchmark.results.csv", [append]),
 
-	%% Write the CSV string to the file
+	%% 写入CSV格式的测试结果
 	Output = io_lib:format("~p, ~p, ~p, ~p, ~p, ~p, ~p, ~p, ~p, ~p~n", [
 		erlang:system_time() div 1000000000,
 		Test, TotalMegaBytes, JIT, LargePages, HardwareAES,
@@ -125,14 +202,15 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 	file:write(File, Output),
 	file:close(File),
 
+	%% 计算性能指标
 	Label = "Chunks Processed",
-
 	Chunks = (TotalMegaBytes * ?MiB) div ?DATA_CHUNK_SIZE,
 	TimePerChunk = (Total / Chunks) * 1000,
 	TimePerChunkPerCore = TimePerChunk * NumWorkers,
 	ChunksPerSecond = Chunks / Total,
 	ChunksPerSecondPerCore = ChunksPerSecond / NumWorkers,
 
+	%% 打印测试结果
 	io:format("~nBenchmark results:~n"),
 	io:format("~28s: ~p~n", [Label, Chunks]),
 	io:format("~28s: ~.2f~n", ["Total Time (s)", Total]),
@@ -142,34 +220,13 @@ run_benchmark(Test, JIT, LargePages, HardwareAES, PackingDifficulty, Rounds) ->
 	io:format("~28s: ~p~n", ["Chunks Per Second", floor(ChunksPerSecond)]),
 	io:format("~28s: ~p~n", ["Chunks Per Second Per Core", floor(ChunksPerSecondPerCore)]).
 
-%% --------------------------------------------------------------------------------------------
-%% Write Input files
-%% --------------------------------------------------------------------------------------------
-is_repack_test(Test) ->
-	{IsRepackTest, _} = maps:get(Test, ?VALID_TESTS),
-	IsRepackTest.
-
-output_filename(Config) ->
-	#test_config{
-		test = Test,
-		total_megabytes = TotalMegaBytes,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES
-	} = Config,
-	Permutation = {TotalMegaBytes, JIT, LargePages, HardwareAES},
-	%% convert the Permutation tuple to a list of strings so that we can join them with a dot
-	StringList = lists:map(fun(E) -> integer_to_list(E) end, tuple_to_list(Permutation)),
-	io_lib:format("benchmark.output.~s.~p", [string:join(StringList, "."), Test]).
-unpacked_filename(TotalMegaBytes) ->
-	io_lib:format("benchmark.input.~p.unpacked", [TotalMegaBytes]).
-packed_filename(TotalMegaBytes) ->
-	io_lib:format("benchmark.input.~p.packed", [TotalMegaBytes]).
-
+%% @doc 生成测试输入数据
+%% Config - 测试配置
 generate_input(Config) ->
 	#test_config{ total_megabytes = TotalMegaBytes } = Config,
 	TotalBytes = TotalMegaBytes * ?MiB,
 
+	%% 生成未打包数据文件
 	UnpackedFilename = unpacked_filename(TotalMegaBytes),
 	case file:read_file_info(UnpackedFilename) of
 		{ok, FileInfo1} ->
@@ -184,10 +241,10 @@ generate_input(Config) ->
 			write_random_data(UnpackedFilename, TotalBytes)
 	end,
 
+	%% 生成打包数据文件
 	PackedFilename = packed_filename(TotalMegaBytes),
 	case file:read_file_info(PackedFilename) of
 		{ok, FileInfo2} ->
-			%% If the file already exists and is the correct size, we don't need to do anything
 			if
 				FileInfo2#file_info.size == TotalBytes ->
 					ok;
@@ -199,15 +256,20 @@ generate_input(Config) ->
 			write_packed_data(Config, UnpackedFilename, PackedFilename)
 	end.
 
+%% @doc 写入随机测试数据
 write_random_data(UnpackedFilename, TotalBytes) ->
 	io:format("Generating input file: ~s~n", [UnpackedFilename]),
 	File = open_file(UnpackedFilename, [write, binary, raw]),
 	write_chunks(File, TotalBytes),
 	file:close(File).
+
+%% @doc 分块写入数据
 write_chunks(File, TotalBytes) ->
 	ChunkSize = 1024*1024, % 1MB
 	RemainingBytes = TotalBytes,
 	write_chunks_loop(File, RemainingBytes, ChunkSize).
+
+%% @doc 循环写入数据块
 write_chunks_loop(_File, 0, _) ->
 	ok;
 write_chunks_loop(File, RemainingBytes, ChunkSize) ->
@@ -216,9 +278,10 @@ write_chunks_loop(File, RemainingBytes, ChunkSize) ->
 	file:write(File, Data),
 	write_chunks_loop(File, RemainingBytes - BytesToWrite, ChunkSize).
 
+%% @doc 写入打包数据
 write_packed_data(Config, UnpackedFilename, PackedFilename) ->
 	io:format("Generating input file: ~s~n", [PackedFilename]),
-	{ok, RandomXState} = {ok, RandomXState} = init_randomx_state(Config),
+	{ok, RandomXState} = init_randomx_state(Config),
 
 	UnpackedFileHandle = open_file(UnpackedFilename, [read, binary]),
 	PackedFileHandle = open_file(PackedFilename, [write, binary]),
@@ -233,16 +296,14 @@ write_packed_data(Config, UnpackedFilename, PackedFilename) ->
 	file:close(PackedFileHandle),
 	file:close(UnpackedFileHandle).
 
-%% --------------------------------------------------------------------------------------------
-%% Test Runners
-%% --------------------------------------------------------------------------------------------
-
+%% @doc 运行基准测试
 run_benchmark(Config) ->
 	#test_config{
 		test = Test,
 		total_megabytes = TotalMegaBytes
 	} = Config,
 	
+	%% 根据测试类型打开相应的输入文件
 	Config2 = case is_repack_test(Test) of
 		true ->
 			Config#test_config{
@@ -256,10 +317,13 @@ run_benchmark(Config) ->
 			}
 	end,
 
+	%% 初始化RandomX状态
 	{ok, RandomXState} = init_randomx_state(Config),
 
+	%% 运行测试
 	run_test(Config2#test_config{randomx_state = RandomXState}).
 
+%% @doc 初始化RandomX状态
 init_randomx_state(Config) ->
 	#test_config{
 		test = Test,
@@ -280,6 +344,7 @@ init_randomx_state(Config) ->
 						JIT, LargePages, NumWorkers])
 	end.
 
+%% @doc 运行测试
 run_test(Config) ->
 	#test_config{
 		input_file = InputFileHandle,
@@ -292,7 +357,7 @@ run_test(Config) ->
 	file:close(InputFileHandle),
 	file:close(OutputFileHandle).
 
-%% For now this just encrypts each chunk without adding the offset hash
+%% @doc 执行测试
 test(Config) ->
 	#test_config{
 		test = Test,
@@ -300,7 +365,7 @@ test(Config) ->
 		num_workers = NumWorkers
 	} = Config,
 	TotalBytes = TotalMegaBytes * ?MiB,
-	%% Spin up NumWorkers threads each responsible for a fraction of the file
+	%% 启动多个工作进程,每个负责处理一部分数据
 	WorkerSize = TotalBytes div NumWorkers,
 	{_, WorkerFun} = maps:get(Test, ?VALID_TESTS),
 	Workers = [spawn_monitor(
@@ -311,7 +376,7 @@ test(Config) ->
 			WorkerSize * (N - 1),
 			WorkerSize
 		) end) || N <- lists:seq(1, NumWorkers)],
-	%% Wait for all workers to finish
+	%% 等待所有工作进程完成
 	[
 		receive
 			{'DOWN', Ref, process, Pid, _Result} -> erlang:demonitor(Ref), ok
@@ -321,209 +386,17 @@ test(Config) ->
 	],
 	io:format("~n").
 
+%% @doc 工作进程函数
 worker(WorkerID, Config, WorkerFun, Offset, Size) ->
 	ar_bench_timer:record({total, WorkerID}, WorkerFun, [
 			WorkerID,
 			Config,
 			Offset,
 			Size
-		]),
+			]),
 	exit(normal).
 
-%% --------------------------------------------------------------------------------------------
-%% Baseline Packing Test
-%% --------------------------------------------------------------------------------------------
-pack_legacy_chunks(_WorkerID, _Config, _Offset, Size) when Size =< 0 ->
-	ok;
-pack_legacy_chunks(WorkerID, Config, Offset, Size) ->
-	#test_config{
-		randomx_state = RandomXState,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES,
-		input_file = UnpackedFileHandle,
-		output_file = PackedFileHandle,
-		root = Root,
-		dst_address = DstAddress
-	} = Config,
-	ChunkSize = min(Size, ?DATA_CHUNK_SIZE),
-	{spora_2_6, Key} = ar_packing_server:chunk_key({spora_2_6, DstAddress}, Offset, Root),
-	ReadResult = file:pread(UnpackedFileHandle, Offset, ChunkSize),
-	RemainingSize = case ReadResult of
-		{ok, UnpackedChunk} ->
-			{ok, PackedChunk} = ar_rx512_nif:rx512_encrypt_chunk_nif(
-				RandomXState, Key, UnpackedChunk, ?RANDOMX_PACKING_ROUNDS_2_6,
-				JIT, LargePages, HardwareAES),
-			file:pwrite(PackedFileHandle, Offset, PackedChunk),
-			(Size - ChunkSize);
-		eof ->
-			0;
-		{error, Reason} ->
-			io:format("Error reading file: ~p~n", [Reason]),
-			0
-	end,
-	pack_legacy_chunks(WorkerID, Config, Offset+ChunkSize, RemainingSize).
-
-%% --------------------------------------------------------------------------------------------
-%% Baseline Packing 2.8 Test
-%% --------------------------------------------------------------------------------------------
-% TODO diff other than 1
-
-pack_composite_chunks(_WorkerID, _Config, _Offset, Size) when Size =< 0 ->
-	ok;
-pack_composite_chunks(WorkerID, Config, Offset, Size) ->
-	#test_config{
-		randomx_state = RandomXState,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES,
-		input_file = UnpackedFileHandle,
-		output_file = PackedFileHandle,
-		root = Root,
-		dst_address = DstAddress,
-		packing_difficulty = PackingDifficulty,
-		rounds = Rounds
-	} = Config,
-	ChunkSize = min(Size, ?DATA_CHUNK_SIZE),
-	{composite, Key} = ar_packing_server:chunk_key({composite, DstAddress, PackingDifficulty}, Offset, Root),
-	ReadResult = file:pread(UnpackedFileHandle, Offset, ChunkSize),
-	RemainingSize = case ReadResult of
-		{ok, UnpackedChunk} ->
-			{ok, PackedChunk} = ar_rx4096_nif:rx4096_encrypt_composite_chunk_nif(
-				RandomXState, Key, UnpackedChunk,
-				JIT, LargePages, HardwareAES,
-				Rounds, PackingDifficulty, ?COMPOSITE_PACKING_SUB_CHUNK_COUNT),
-			file:pwrite(PackedFileHandle, Offset, PackedChunk),
-			(Size - ChunkSize);
-		eof ->
-			0;
-		{error, Reason} ->
-			io:format("Error reading file: ~p~n", [Reason]),
-			0
-	end,
-	pack_composite_chunks(WorkerID, Config, Offset+ChunkSize, RemainingSize).
-
-%% --------------------------------------------------------------------------------------------
-%% Baseline Repacking Test
-%% --------------------------------------------------------------------------------------------
-erl_repack_legacy_chunks(_WorkerID, _Config, _Offset, Size) when Size =< 0 ->
-	ok;
-erl_repack_legacy_chunks(WorkerID, Config, Offset, Size) ->
-	#test_config{
-		randomx_state = RandomXState,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES,
-		input_file = PackedFileHandle,
-		output_file = RepackedFileHandle,
-		root = Root,
-		src_address = SrcAddress,
-		dst_address = DstAddress
-	} = Config,
-	ChunkSize = min(Size, ?DATA_CHUNK_SIZE),
-	{spora_2_6, UnpackKey} = ar_packing_server:chunk_key({spora_2_6, SrcAddress}, Offset, Root),
-	{spora_2_6, PackKey} = ar_packing_server:chunk_key({spora_2_6, DstAddress}, Offset, Root),
-	ReadResult = file:pread(PackedFileHandle, Offset, ChunkSize),
-	RemainingSize = case ReadResult of
-		{ok, PackedChunk} ->
-			{ok, UnpackedChunk} = ar_rx512_nif:rx512_decrypt_chunk_nif(
-				RandomXState, UnpackKey, PackedChunk, ChunkSize, ?RANDOMX_PACKING_ROUNDS_2_6,
-				JIT, LargePages, HardwareAES),
-			{ok, RepackedChunk} =ar_rx512_nif:rx512_encrypt_chunk_nif(
-				RandomXState, PackKey, UnpackedChunk, ?RANDOMX_PACKING_ROUNDS_2_6,
-				JIT, LargePages, HardwareAES),	
-			file:pwrite(RepackedFileHandle, Offset, RepackedChunk),
-			(Size - ChunkSize);
-		eof ->
-			0;
-		{error, Reason} ->
-			io:format("Error reading file: ~p~n", [Reason]),
-			0
-	end,
-	erl_repack_legacy_chunks(WorkerID, Config, Offset+ChunkSize, RemainingSize).
-
-%% --------------------------------------------------------------------------------------------
-%% NIF Repacking Test
-%% --------------------------------------------------------------------------------------------
-nif_repack_legacy_chunks(_WorkerID, _Config, _Offset, Size) when Size =< 0 ->
-	ok;
-nif_repack_legacy_chunks(WorkerID, Config, Offset, Size) ->
-	#test_config{
-		randomx_state = RandomXState,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES,
-		input_file = PackedFileHandle,
-		output_file = RepackedFileHandle,
-		root = Root,
-		src_address = SrcAddress,
-		dst_address = DstAddress
-	} = Config,
-	ChunkSize = min(Size, ?DATA_CHUNK_SIZE),
-	{spora_2_6, UnpackKey} = ar_packing_server:chunk_key({spora_2_6, SrcAddress}, Offset, Root),
-	{spora_2_6, PackKey} = ar_packing_server:chunk_key({spora_2_6, DstAddress}, Offset, Root),
-	ReadResult = file:pread(PackedFileHandle, Offset, ChunkSize),
-	RemainingSize = case ReadResult of
-		{ok, PackedChunk} ->
-			{ok, RepackedChunk, _} = ar_rx512_nif:rx512_reencrypt_chunk_nif(
-				RandomXState, UnpackKey, PackKey, PackedChunk, ChunkSize,
-				?RANDOMX_PACKING_ROUNDS_2_6, ?RANDOMX_PACKING_ROUNDS_2_6,
-				JIT, LargePages, HardwareAES),
-			file:pwrite(RepackedFileHandle, Offset, RepackedChunk),
-			(Size - ChunkSize);
-		eof ->
-			0;
-		{error, Reason} ->
-			io:format("Error reading file: ~p~n", [Reason]),
-			0
-	end,
-	nif_repack_legacy_chunks(WorkerID, Config, Offset+ChunkSize, RemainingSize).
-
-nif_repack_composite_chunks(_WorkerID, _Config, _Offset, Size) when Size =< 0 ->
-	ok;
-nif_repack_composite_chunks(WorkerID, Config, Offset, Size) ->
-	#test_config{
-		randomx_state = RandomXState,
-		jit = JIT,
-		large_pages = LargePages,
-		hardware_aes = HardwareAES,
-		input_file = PackedFileHandle,
-		output_file = RepackedFileHandle,
-		root = Root,
-		src_address = SrcAddress,
-		dst_address = DstAddress,
-		packing_difficulty = PackingDifficulty,
-		rounds = Rounds
-	} = Config,
-	ChunkSize = min(Size, ?DATA_CHUNK_SIZE),
-	{composite, UnpackKey} = ar_packing_server:chunk_key({composite, SrcAddress, PackingDifficulty}, Offset, Root),
-	{composite, PackKey} = ar_packing_server:chunk_key({composite, DstAddress, PackingDifficulty}, Offset, Root),
-	ReadResult = file:pread(PackedFileHandle, Offset, ChunkSize),
-	RemainingSize = case ReadResult of
-		{ok, PackedChunk} ->
-			{ok, RepackedChunk, _} = ar_rx4096_nif:rx4096_reencrypt_composite_chunk_nif(
-				RandomXState, UnpackKey, PackKey, PackedChunk, JIT, LargePages, HardwareAES,
-				Rounds, Rounds, PackingDifficulty, PackingDifficulty,
-				?COMPOSITE_PACKING_SUB_CHUNK_COUNT, ?COMPOSITE_PACKING_SUB_CHUNK_COUNT),
-			
-			file:pwrite(RepackedFileHandle, Offset, RepackedChunk),
-			(Size - ChunkSize);
-		eof ->
-			0;
-		{error, Reason} ->
-			io:format("Error reading file: ~p~n", [Reason]),
-			0
-	end,
-	nif_repack_composite_chunks(WorkerID, Config, Offset+ChunkSize, RemainingSize).
-
-%% --------------------------------------------------------------------------------------------
-%% Helpers
-%% --------------------------------------------------------------------------------------------
-open_file(Filename, Options) ->
-	case file:open(Filename, Options) of
-		{ok, File} ->
-			File;
-		{error, Reason} ->
-			io:format("Error opening ~s: ~p~n", [Filename, Reason]),
-			show_help()
-	end.
+%% @doc 检查是否为重打包测试
+is_repack_test(Test) ->
+	{IsRepackTest, _} = maps:get(Test, ?VALID_TESTS),
+	IsRepackTest.
